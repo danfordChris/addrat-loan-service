@@ -13,6 +13,7 @@ import com.pesa.repository.LoanRepository;
 import com.pesa.repository.LoanPaymentRepository;
 import com.pesa.repository.UserAccountRepository;
 import com.pesa.service.credit.CreditProviderClient;
+import com.pesa.service.payment.PaymentGatewayClient;
 import com.pesa.util.LoanCalculator;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -23,6 +24,8 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.util.EnumSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -38,8 +41,10 @@ public class LoanService {
     private final KycProfileLiteRepository kycProfileLiteRepository;
     private final CreditBoardScoreLiteRepository creditBoardScoreLiteRepository;
     private final CreditProviderClient creditProviderClient;
+    private final PaymentGatewayClient paymentGatewayClient;
     private final LoanCalculator loanCalculator;
     private final LoanPolicyProperties loanPolicyProperties;
+    private final LoanEventStreamService loanEventStreamService;
 
     public LoanCalculator.LoanBreakdown calculateLoan(BigDecimal amount, Integer durationMonths) {
         return loanCalculator.calculate(amount, durationMonths);
@@ -190,9 +195,10 @@ public class LoanService {
         Loan loan = loanRepository.findById(loanId)
             .orElseThrow(() -> new RuntimeException("Loan not found"));
 
-        loan.setStatus(Loan.LoanStatus.APPROVED);
-        loan.setApprovedAt(java.time.LocalDateTime.now());
+        transitionOrThrow(loan, Loan.LoanStatus.APPROVED);
+        loan.setApprovedAt(LocalDateTime.now());
         loan = loanRepository.save(loan);
+        loanEventStreamService.publishStatusChanged(loan);
 
         log.info("Loan approved: {}", loanId);
         return loan;
@@ -210,6 +216,7 @@ public class LoanService {
         loan.setStatus(Loan.LoanStatus.DISBURSED);
         loan.setDisbursedAt(java.time.LocalDateTime.now());
         loan = loanRepository.save(loan);
+        loanEventStreamService.publishStatusChanged(loan);
 
         log.info("Loan disbursed: {}", loanId);
         return loan;
@@ -231,12 +238,12 @@ public class LoanService {
 
     public Loan getActiveLoan(Long userId) {
         return loanRepository.findFirstByUserIdAndStatusInOrderByCreatedAtDesc(
-                userId, List.of(Loan.LoanStatus.ACTIVE, Loan.LoanStatus.OVERDUE, Loan.LoanStatus.DISBURSED))
+                userId, List.of(Loan.LoanStatus.DISBURSEMENT_PENDING, Loan.LoanStatus.ACTIVE, Loan.LoanStatus.OVERDUE, Loan.LoanStatus.DISBURSED))
             .orElse(null);
     }
 
     @Transactional
-    public Loan acceptLoan(Long userId, Long loanId, String pin) {
+    public Loan acceptLoan(Long userId, Long loanId, String pin, String authorizationHeader) {
         Loan loan = getLoanForUser(loanId, userId);
         if (loan.getStatus() != Loan.LoanStatus.APPROVED) {
             throw new RuntimeException("Loan is not approved for acceptance");
@@ -253,9 +260,33 @@ public class LoanService {
             throw new RuntimeException("Invalid PIN");
         }
 
-        loan.setStatus(Loan.LoanStatus.ACTIVE);
-        loan.setDisbursedAt(java.time.LocalDateTime.now());
-        return loanRepository.save(loan);
+        transitionOrThrow(loan, Loan.LoanStatus.DISBURSEMENT_PENDING);
+        loan = loanRepository.save(loan);
+        loanEventStreamService.publishStatusChanged(loan);
+
+        BigDecimal disbursementAmount = loan.getPrincipalAmount().subtract(loan.getApplicationFee());
+        if (disbursementAmount.compareTo(BigDecimal.ZERO) < 0) {
+            disbursementAmount = BigDecimal.ZERO;
+        }
+
+        String idempotencyKey = "loan-disburse-" + loan.getId();
+        String correlationId = "loan-" + loan.getId() + "-accept";
+        try {
+            paymentGatewayClient.requestDisbursement(
+                    loan.getId(),
+                    userId,
+                    disbursementAmount,
+                    authorizationHeader,
+                    idempotencyKey,
+                    correlationId
+            );
+        } catch (RuntimeException e) {
+            transitionOrThrow(loan, Loan.LoanStatus.DISBURSEMENT_FAILED);
+            loan = loanRepository.save(loan);
+            loanEventStreamService.publishStatusChanged(loan);
+            throw e;
+        }
+        return loan;
     }
 
     @Transactional
@@ -272,7 +303,70 @@ public class LoanService {
         payment = loanPaymentRepository.save(payment);
         log.info("Payment recorded for loan: {}", loanId);
 
+        BigDecimal totalPaid = loanPaymentRepository.sumAmountsByLoanId(loanId);
+        if (totalPaid.compareTo(loan.getTotalAmountDue()) >= 0
+                && loan.getStatus() != Loan.LoanStatus.CLOSED
+                && loan.getStatus() != Loan.LoanStatus.COMPLETED) {
+            transitionOrThrow(loan, Loan.LoanStatus.CLOSED);
+            loan.setCompletedAt(LocalDateTime.now());
+            loan = loanRepository.save(loan);
+            loanEventStreamService.publishStatusChanged(loan);
+            log.info("Loan closed after repayment: loanId={}", loanId);
+        }
+
         return payment;
+    }
+
+    @Transactional
+    public void markDisbursementPosted(Long loanId) {
+        Loan loan = getLoan(loanId);
+        if (loan.getStatus() == Loan.LoanStatus.CLOSED || loan.getStatus() == Loan.LoanStatus.COMPLETED) {
+            return;
+        }
+        transitionOrThrow(loan, Loan.LoanStatus.ACTIVE);
+        loan.setDisbursedAt(LocalDateTime.now());
+        loan = loanRepository.save(loan);
+        loanEventStreamService.publishStatusChanged(loan);
+    }
+
+    @Transactional
+    public void markDisbursementFailed(Long loanId) {
+        Loan loan = getLoan(loanId);
+        if (loan.getStatus() == Loan.LoanStatus.CLOSED || loan.getStatus() == Loan.LoanStatus.COMPLETED) {
+            return;
+        }
+        transitionOrThrow(loan, Loan.LoanStatus.DISBURSEMENT_FAILED);
+        loan = loanRepository.save(loan);
+        loanEventStreamService.publishStatusChanged(loan);
+    }
+
+    @Transactional
+    public void recordPaymentFromEvent(Long loanId, Long transactionId, BigDecimal amount) {
+        if (transactionId != null && loanPaymentRepository.findByTransactionId(transactionId).isPresent()) {
+            return;
+        }
+        recordPayment(loanId, transactionId, amount);
+    }
+
+    @Transactional
+    public void reversePaymentFromEvent(Long loanId, Long transactionId) {
+        if (transactionId == null) {
+            return;
+        }
+        long removed = loanPaymentRepository.deleteByTransactionId(transactionId);
+        if (removed == 0) {
+            return;
+        }
+
+        Loan loan = getLoan(loanId);
+        BigDecimal totalPaid = loanPaymentRepository.sumAmountsByLoanId(loanId);
+        if (totalPaid.compareTo(loan.getTotalAmountDue()) < 0 && loan.getStatus() == Loan.LoanStatus.CLOSED) {
+            transitionOrThrow(loan, Loan.LoanStatus.ACTIVE);
+            loan.setCompletedAt(null);
+            loan = loanRepository.save(loan);
+            loanEventStreamService.publishStatusChanged(loan);
+            log.info("Loan reopened after payment reversal: loanId={}, transactionId={}", loanId, transactionId);
+        }
     }
 
     public java.util.List<LoanPayment> getLoanPayments(Long loanId) {
@@ -293,6 +387,29 @@ public class LoanService {
         if (kyc.getStatus() != KycProfileLite.KycStatus.APPROVED) {
             throw new RuntimeException("KYC must be approved before taking a loan");
         }
+    }
+
+    private void transitionOrThrow(Loan loan, Loan.LoanStatus target) {
+        Loan.LoanStatus current = loan.getStatus();
+        if (current == target) {
+            return;
+        }
+        EnumSet<Loan.LoanStatus> allowedFrom = allowedSources(target);
+        if (!allowedFrom.contains(current)) {
+            throw new RuntimeException("Invalid loan transition: " + current + " -> " + target);
+        }
+        loan.setStatus(target);
+    }
+
+    private EnumSet<Loan.LoanStatus> allowedSources(Loan.LoanStatus target) {
+        return switch (target) {
+            case APPROVED -> EnumSet.of(Loan.LoanStatus.PENDING, Loan.LoanStatus.DISBURSEMENT_FAILED);
+            case DISBURSEMENT_PENDING -> EnumSet.of(Loan.LoanStatus.APPROVED);
+            case ACTIVE -> EnumSet.of(Loan.LoanStatus.DISBURSEMENT_PENDING, Loan.LoanStatus.CLOSED);
+            case DISBURSEMENT_FAILED -> EnumSet.of(Loan.LoanStatus.DISBURSEMENT_PENDING);
+            case CLOSED -> EnumSet.of(Loan.LoanStatus.ACTIVE, Loan.LoanStatus.OVERDUE, Loan.LoanStatus.DISBURSED);
+            default -> EnumSet.allOf(Loan.LoanStatus.class);
+        };
     }
 
 }

@@ -1,0 +1,4 @@
+-------------------------------------------------------------------------------
+Test set: com.pesa.service.PaymentEventConsumerTest
+-------------------------------------------------------------------------------
+Tests run: 4, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 11.11 s -- in com.pesa.service.PaymentEventConsumerTest

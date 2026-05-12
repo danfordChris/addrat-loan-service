@@ -16,6 +16,15 @@ spring:
       hibernate:
         dialect: org.hibernate.dialect.PostgreSQLDialect
 
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    baseline-on-migrate: true
+    baseline-version: 0
+
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+
 server:
   port: 8083
   servlet:
@@ -71,3 +80,12 @@ credit:
     mock: ${CREDIT_PROVIDER_MOCK:true}
     base-url: ${CREDIT_PROVIDER_BASE_URL:}
     api-key: ${CREDIT_PROVIDER_API_KEY:}
+
+payment:
+  service:
+    base-url: ${PAYMENT_SERVICE_BASE_URL:http://localhost:8082/api/payments}
+    default-currency: ${PAYMENT_SERVICE_CURRENCY:TZS}
+    default-channel: ${PAYMENT_SERVICE_CHANNEL:INTERNAL_WALLET}
+  events:
+    topic: ${PAYMENT_EVENTS_TOPIC:payment.events.v1}
+    group-id: ${PAYMENT_EVENTS_GROUP_ID:loan-service}

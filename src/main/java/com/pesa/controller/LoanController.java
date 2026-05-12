@@ -7,6 +7,7 @@ import com.pesa.dto.LoanListResponse;
 import com.pesa.dto.LoanResponse;
 import com.pesa.entity.Loan;
 import com.pesa.mapper.LoanMapper;
+import com.pesa.service.LoanEventStreamService;
 import com.pesa.service.LoanService;
 import com.pesa.util.LoanCalculator;
 import jakarta.validation.Valid;
@@ -18,6 +19,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.math.BigDecimal;
 import java.util.List;
@@ -29,9 +31,11 @@ public class LoanController {
 
     private static final Logger log = LoggerFactory.getLogger(LoanController.class);
     private final LoanService loanService;
+    private final LoanEventStreamService loanEventStreamService;
 
-    public LoanController(LoanService loanService) {
+    public LoanController(LoanService loanService, LoanEventStreamService loanEventStreamService) {
         this.loanService = loanService;
+        this.loanEventStreamService = loanEventStreamService;
     }
 
     @GetMapping("/products")
@@ -108,6 +112,15 @@ public class LoanController {
         }
     }
 
+    @GetMapping(path = "/{loanId}/events/stream", produces = "text/event-stream")
+    public SseEmitter streamLoanEvents(
+            @PathVariable Long loanId,
+            Authentication authentication) {
+        Long userId = (Long) authentication.getDetails();
+        Loan loan = loanService.getLoanForUser(loanId, userId);
+        return loanEventStreamService.subscribe(loanId, userId, loan);
+    }
+
     @GetMapping("/active")
     public ResponseEntity<ApiResponse<LoanResponse>> getActiveLoan(Authentication authentication) {
         try {
@@ -129,11 +142,12 @@ public class LoanController {
     public ResponseEntity<ApiResponse<LoanResponse>> acceptLoan(
             @PathVariable Long loanId,
             @RequestBody Map<String, String> body,
-            Authentication authentication) {
+            Authentication authentication,
+            @RequestHeader(value = "Authorization", required = false) String authorization) {
         try {
             Long userId = (Long) authentication.getDetails();
             String pin = body.get("pin");
-            Loan loan = loanService.acceptLoan(userId, loanId, pin);
+            Loan loan = loanService.acceptLoan(userId, loanId, pin, authorization);
             LoanResponse response = LoanMapper.toLoanResponse(loan);
             return ResponseEntity.ok(new ApiResponse<>(true, "Loan accepted", response));
         } catch (RuntimeException e) {
