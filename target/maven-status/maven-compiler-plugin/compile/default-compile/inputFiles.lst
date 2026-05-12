@@ -3,6 +3,7 @@
 /Users/danfordchris/projects/starterpacks/pesa-lending/backend/loan-service/src/main/java/com/pesa/common/api/ApiResponses.java
 /Users/danfordchris/projects/starterpacks/pesa-lending/backend/loan-service/src/main/java/com/pesa/common/exception/GlobalExceptionHandler.java
 /Users/danfordchris/projects/starterpacks/pesa-lending/backend/loan-service/src/main/java/com/pesa/common/logging/AppLogger.java
+/Users/danfordchris/projects/starterpacks/pesa-lending/backend/loan-service/src/main/java/com/pesa/config/LoanPolicyProperties.java
 /Users/danfordchris/projects/starterpacks/pesa-lending/backend/loan-service/src/main/java/com/pesa/controller/LoanController.java
 /Users/danfordchris/projects/starterpacks/pesa-lending/backend/loan-service/src/main/java/com/pesa/dto/ApiResponse.java
 /Users/danfordchris/projects/starterpacks/pesa-lending/backend/loan-service/src/main/java/com/pesa/dto/LoanApplicationRequest.java

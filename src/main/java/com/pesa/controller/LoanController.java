@@ -15,6 +15,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.*;
 
@@ -65,6 +66,19 @@ public class LoanController {
     @PostMapping("/apply")
     public ResponseEntity<ApiResponse<LoanResponse>> applyForLoan(
             @Valid @RequestBody LoanApplicationRequest request,
+            Authentication authentication) {
+        return submitLoanApplication(request, authentication);
+    }
+
+    @PostMapping("/applications")
+    public ResponseEntity<ApiResponse<LoanResponse>> applyForLoanV2(
+            @Valid @RequestBody LoanApplicationRequest request,
+            Authentication authentication) {
+        return submitLoanApplication(request, authentication);
+    }
+
+    private ResponseEntity<ApiResponse<LoanResponse>> submitLoanApplication(
+            LoanApplicationRequest request,
             Authentication authentication) {
         try {
             Long userId = (Long) authentication.getDetails();
@@ -147,6 +161,7 @@ public class LoanController {
     }
 
     @PostMapping("/{loanId}/approve")
+    @PreAuthorize("hasRole('ADMIN')")
     public ResponseEntity<ApiResponse<LoanResponse>> approveLoan(@PathVariable Long loanId) {
         try {
             Loan loan = loanService.approveLoan(loanId);
@@ -160,6 +175,7 @@ public class LoanController {
     }
 
     @PostMapping("/{loanId}/disburse")
+    @PreAuthorize("hasRole('ADMIN')")
     public ResponseEntity<ApiResponse<LoanResponse>> disburseLoan(@PathVariable Long loanId) {
         try {
             Loan loan = loanService.disburseLoan(loanId);

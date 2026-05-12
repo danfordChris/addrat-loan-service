@@ -5,6 +5,7 @@ import com.pesa.entity.LoanPayment;
 import com.pesa.entity.CreditBoardScoreLite;
 import com.pesa.entity.KycProfileLite;
 import com.pesa.entity.UserAccount;
+import com.pesa.config.LoanPolicyProperties;
 import com.pesa.dto.credit.CreditProfileResponse;
 import com.pesa.repository.CreditBoardScoreLiteRepository;
 import com.pesa.repository.KycProfileLiteRepository;
@@ -38,6 +39,7 @@ public class LoanService {
     private final CreditBoardScoreLiteRepository creditBoardScoreLiteRepository;
     private final CreditProviderClient creditProviderClient;
     private final LoanCalculator loanCalculator;
+    private final LoanPolicyProperties loanPolicyProperties;
 
     public LoanCalculator.LoanBreakdown calculateLoan(BigDecimal amount, Integer durationMonths) {
         return loanCalculator.calculate(amount, durationMonths);
@@ -97,23 +99,17 @@ public class LoanService {
             .filter(l -> l.getStatus() == Loan.LoanStatus.CLOSED || l.getStatus() == Loan.LoanStatus.COMPLETED)
             .count();
 
-        BigDecimal stepUpMultiplier = completedLoans >= 3 ? new BigDecimal("1.50")
-            : completedLoans >= 1 ? new BigDecimal("1.25")
+        BigDecimal stepUpMultiplier = completedLoans >= 3 ? loanPolicyProperties.getCompletedLoanStepUpThree()
+            : completedLoans >= 1 ? loanPolicyProperties.getCompletedLoanStepUpOne()
             : BigDecimal.ONE;
 
-        BigDecimal utilizationFactor = utilizationRatio.compareTo(new BigDecimal("0.8")) > 0 ? new BigDecimal("0.5")
-                : utilizationRatio.compareTo(new BigDecimal("0.6")) > 0 ? new BigDecimal("0.75")
+        BigDecimal utilizationFactor = utilizationRatio.compareTo(new BigDecimal("0.8")) > 0 ? loanPolicyProperties.getUtilizationFactorHigh()
+                : utilizationRatio.compareTo(new BigDecimal("0.6")) > 0 ? loanPolicyProperties.getUtilizationFactorMedium()
                 : BigDecimal.ONE;
         BigDecimal dynamicCap = creditLimit.multiply(stepUpMultiplier).multiply(utilizationFactor);
         String riskBand = creditScore.compareTo(new BigDecimal("700")) >= 0 ? "LOW"
             : creditScore.compareTo(new BigDecimal("600")) >= 0 ? "MEDIUM"
             : "HIGH";
-
-        List<Map<String, Object>> templates = List.of(
-            template("instant", "INSTANT", "Mkopo wa Haraka", 50000, 500000, 7, 30),
-            template("emergency", "EMERGENCY", "Mkopo wa Dharura", 100000, 1500000, 14, 90),
-            template("business", "BUSINESS", "Mkopo wa Biashara", 300000, 5000000, 30, 360)
-        );
 
         final boolean finalCreditEligible = creditEligible;
         final BigDecimal finalCreditScore = creditScore;
@@ -122,11 +118,12 @@ public class LoanService {
         final String finalRecommendation = recommendation;
 
         List<Map<String, Object>> results = new java.util.ArrayList<>();
-        for (Map<String, Object> t : templates) {
-            BigDecimal baseMax = new BigDecimal(String.valueOf(t.get("maxAmount")));
-            BigDecimal finalMax = baseMax.min(dynamicCap).max(new BigDecimal(String.valueOf(t.get("minAmount"))));
+        for (LoanPolicyProperties.ProductPolicy product : loanPolicyProperties.getProducts()) {
+            BigDecimal minAmount = BigDecimal.valueOf(product.getMinAmount());
+            BigDecimal baseMax = BigDecimal.valueOf(product.getMaxAmount());
+            BigDecimal finalMax = baseMax.min(dynamicCap).max(minAmount);
             boolean eligible = userActive && kycApproved && finalCreditEligible
-                && finalMax.compareTo(new BigDecimal(String.valueOf(t.get("minAmount")))) >= 0;
+                && finalMax.compareTo(minAmount) >= 0;
 
             String reason = null;
             if (!userActive) {
@@ -139,14 +136,22 @@ public class LoanService {
                 reason = "Credit defaults detected";
             }
 
-            Map<String, Object> out = new LinkedHashMap<>(t);
-            out.put("monthlyInterestRate", 0.035);
-            out.put("applicationFeePct", 5.0);
-            out.put("penaltyMonthlyPct", 5.0);
+            Map<String, Object> out = new LinkedHashMap<>();
+            out.put("id", product.getId());
+            out.put("code", product.getCode());
+            out.put("name", product.getName());
+            out.put("category", product.getCategory());
+            out.put("minAmount", product.getMinAmount());
+            out.put("maxAmount", product.getMaxAmount());
+            out.put("minTermDays", product.getMinTermDays());
+            out.put("maxTermDays", product.getMaxTermDays());
+            out.put("monthlyInterestRate", loanPolicyProperties.getMonthlyInterestRatePct().divide(new BigDecimal("100"), 8, java.math.RoundingMode.HALF_UP));
+            out.put("applicationFeePct", loanPolicyProperties.getApplicationFeePct());
+            out.put("penaltyMonthlyPct", loanPolicyProperties.getMonthlyPenaltyRatePct());
             out.put("maxAmount", finalMax.setScale(0, java.math.RoundingMode.DOWN));
             out.put("eligible", eligible);
             out.put("reasonIfNotEligible", reason);
-            out.put("recommendedAmount", finalMax.multiply(new BigDecimal("0.6")).setScale(0, java.math.RoundingMode.DOWN));
+            out.put("recommendedAmount", finalMax.multiply(loanPolicyProperties.getRecommendedAmountRatio()).setScale(0, java.math.RoundingMode.DOWN));
             out.put("riskBand", riskBand);
             out.put("creditScore", finalCreditScore);
             out.put("utilizationRatio", finalUtilizationRatio);
@@ -290,17 +295,4 @@ public class LoanService {
         }
     }
 
-    private Map<String, Object> template(String id, String code, String name, int minAmount, int maxAmount,
-            int minTermDays, int maxTermDays) {
-        Map<String, Object> t = new LinkedHashMap<>();
-        t.put("id", id);
-        t.put("code", code);
-        t.put("name", name);
-        t.put("category", id);
-        t.put("minAmount", minAmount);
-        t.put("maxAmount", maxAmount);
-        t.put("minTermDays", minTermDays);
-        t.put("maxTermDays", maxTermDays);
-        return t;
-    }
 }

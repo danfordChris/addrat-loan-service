@@ -1,0 +1,6 @@
+com/pesa/entity/KycProfileLite.class
+com/pesa/repository/KycProfileLiteRepository.class
+com/pesa/entity/UserAccount.class
+com/pesa/entity/KycProfileLite$KycStatus.class
+com/pesa/entity/UserAccount$UserStatus.class
+com/pesa/repository/UserAccountRepository.class

@@ -30,12 +30,40 @@ jwt:
   secret: ${JWT_SECRET:your-secret-key-change-in-production}
 
 loan:
-  default-product: STANDARD
-  products:
-    STANDARD:
-      application-fee: 5.0
-      monthly-interest-rate: 3.5
-      monthly-penalty-rate: 5.0
+  policy:
+    application-fee-pct: 5.0
+    monthly-interest-rate-pct: 3.5
+    monthly-penalty-rate-pct: 5.0
+    completed-loan-step-up-one: 1.25
+    completed-loan-step-up-three: 1.50
+    utilization-factor-medium: 0.75
+    utilization-factor-high: 0.50
+    recommended-amount-ratio: 0.60
+    products:
+      - id: instant
+        code: INSTANT
+        name: Mkopo wa Haraka
+        category: instant
+        min-amount: 50000
+        max-amount: 500000
+        min-term-days: 7
+        max-term-days: 30
+      - id: emergency
+        code: EMERGENCY
+        name: Mkopo wa Dharura
+        category: emergency
+        min-amount: 100000
+        max-amount: 1500000
+        min-term-days: 14
+        max-term-days: 90
+      - id: business
+        code: BUSINESS
+        name: Mkopo wa Biashara
+        category: business
+        min-amount: 300000
+        max-amount: 5000000
+        min-term-days: 30
+        max-term-days: 360
 
 credit:
   provider:
